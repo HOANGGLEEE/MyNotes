@@ -16,6 +16,7 @@ class Notes extends Table {
   BoolColumn get deleted => boolean().withDefault(const Constant(false))();
   BoolColumn get dirty => boolean().withDefault(const Constant(true))();
   IntColumn get revision => integer().withDefault(const Constant(1))();
+  IntColumn get serverRevision => integer().withDefault(const Constant(0))();
   DateTimeColumn get updatedAt => dateTime()();
   @override
   Set<Column> get primaryKey => {id};
@@ -34,7 +35,17 @@ class NoteDatabase extends _$NoteDatabase {
             }),
       );
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onCreate: (m) => m.createAll(),
+    onUpgrade: (m, from, to) async {
+      if (from < 2) {
+        await m.addColumn(notes, notes.serverRevision);
+      }
+    },
+  );
   Stream<List<Note>> watchNotes(String owner) =>
       (select(notes)
             ..where((n) => n.owner.equals(owner) & n.deleted.equals(false))
@@ -48,22 +59,28 @@ class NoteDatabase extends _$NoteDatabase {
     String title,
     String body, {
     Note? previous,
+    String? id,
     bool? pinned,
     bool deleted = false,
   }) async {
-    if (previous != null && previous.owner != owner) {
+    final noteId = previous?.id ?? id ?? const Uuid().v4();
+    final current = await (select(notes)..where((n) => n.id.equals(noteId)))
+        .getSingleOrNull();
+    if ((previous != null && previous.owner != owner) ||
+        (current != null && current.owner != owner)) {
       throw StateError('Owner mismatch');
     }
     await into(notes).insertOnConflictUpdate(
       NotesCompanion.insert(
-        id: previous?.id ?? const Uuid().v4(),
+        id: noteId,
         owner: owner,
         title: title.trim(),
         body: body,
-        pinned: Value(pinned ?? previous?.pinned ?? false),
+        pinned: Value(pinned ?? current?.pinned ?? previous?.pinned ?? false),
         deleted: Value(deleted),
         dirty: const Value(true),
-        revision: Value((previous?.revision ?? 0) + 1),
+        revision: Value((current?.revision ?? previous?.revision ?? 0) + 1),
+        serverRevision: Value(current?.serverRevision ?? 0),
         updatedAt: DateTime.now().toUtc(),
       ),
     );
@@ -72,14 +89,53 @@ class NoteDatabase extends _$NoteDatabase {
   Future<List<Note>> pending(String owner) => (select(
     notes,
   )..where((n) => n.owner.equals(owner) & n.dirty.equals(true))).get();
-  Future<void> acknowledge(Note note) async {
-    await (update(notes)..where(
-          (n) =>
-              n.id.equals(note.id) &
-              n.owner.equals(note.owner) &
-              n.revision.equals(note.revision),
-        ))
-        .write(const NotesCompanion(dirty: Value(false)));
+  Future<void> acknowledge(Note note, int serverRevision) async {
+    await transaction(() async {
+      final current = await (select(notes)
+            ..where((n) => n.id.equals(note.id) & n.owner.equals(note.owner)))
+          .getSingleOrNull();
+      if (current == null) return;
+      // An edit made during the upload remains dirty and will be retried
+      // against the newly accepted server revision.
+      await (update(notes)
+            ..where((n) => n.id.equals(note.id) & n.owner.equals(note.owner)))
+          .write(NotesCompanion(
+        serverRevision: Value(serverRevision),
+        dirty: Value(current.revision != note.revision),
+      ));
+    });
+  }
+
+  Future<void> preserveConflict(Note uploaded) async {
+    await transaction(() async {
+      final current = await (select(notes)
+            ..where((n) =>
+                n.id.equals(uploaded.id) & n.owner.equals(uploaded.owner)))
+          .getSingleOrNull();
+      // Do not resolve an older snapshot over newer local user input.
+      if (current == null || !current.dirty ||
+          current.revision != uploaded.revision) return;
+      final conflictTitle = current.title.length > 175
+          ? current.title.substring(0, 175)
+          : current.title;
+      await into(notes).insert(NotesCompanion.insert(
+        id: const Uuid().v4(),
+        owner: current.owner,
+        title: '$conflictTitle (bản xung đột)',
+        body: current.body,
+        pinned: Value(current.pinned),
+        deleted: const Value(false),
+        dirty: const Value(true),
+        revision: const Value(1),
+        serverRevision: const Value(0),
+        updatedAt: DateTime.now().toUtc(),
+      ));
+      // Keep the original row so the cloud version can replace it on pull.
+      await (update(notes)
+            ..where((n) =>
+                n.id.equals(current.id) & n.owner.equals(current.owner)))
+          .write(const NotesCompanion(dirty: Value(false)));
+    });
   }
 
   Future<void> merge(String owner, Map<String, dynamic> row) =>
@@ -102,6 +158,7 @@ class NoteDatabase extends _$NoteDatabase {
             pinned: Value(row['pinned'] as bool),
             deleted: Value(row['deleted'] as bool),
             dirty: const Value(false),
+            serverRevision: Value((row['revision'] as num).toInt()),
             updatedAt: DateTime.parse(row['updated_at'] as String),
           ),
         );
