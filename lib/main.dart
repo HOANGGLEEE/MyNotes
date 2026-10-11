@@ -104,7 +104,9 @@ class _NotesPageState extends ConsumerState<NotesPage> {
       final titleSnapshot = title.text;
       final bodySnapshot = body.text;
       if (note == null && titleSnapshot.trim().isEmpty &&
-          bodySnapshot.trim().isEmpty) return;
+          bodySnapshot.trim().isEmpty) {
+        return;
+      }
       writes = writes.then((_) async {
         await ref.read(databaseProvider).save(
           owner, titleSnapshot, bodySnapshot, id: noteId,
