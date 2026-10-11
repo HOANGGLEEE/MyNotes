@@ -58,15 +58,23 @@ class NoteSync extends ChangeNotifier {
         if (owner != user || _closed) {
           return;
         }
-        await client!.from('notes').upsert({
-          'id': note.id,
-          'user_id': user,
-          'title': note.title,
-          'body': note.body,
-          'pinned': note.pinned,
-          'deleted': note.deleted,
+        // Atomic server-side compare-and-swap prevents blind overwrites.
+        final result = await client!.rpc('save_note_if_revision', params: {
+          'p_id': note.id,
+          'p_title': note.title,
+          'p_body': note.body,
+          'p_pinned': note.pinned,
+          'p_deleted': note.deleted,
+          'p_expected_revision': note.serverRevision,
         });
-        await db.acknowledge(note);
+        final newRevision = (result as num?)?.toInt();
+        if (newRevision == null) {
+          await db.preserveConflict(note);
+          status = 'Xung đột: đã giữ một bản sao';
+          continue;
+        }
+        if (owner != user || _closed) return;
+        await db.acknowledge(note, newRevision);
       }
       for (var offset = 0; ; offset += 500) {
         final rows = await client!
@@ -85,7 +93,7 @@ class NoteSync extends ChangeNotifier {
           break;
         }
       }
-      status = 'Đã đồng bộ';
+      if (!status.startsWith('Xung đột')) status = 'Đã đồng bộ';
     } catch (_) {
       status = 'Chưa đồng bộ — sẽ thử lại';
     } finally {
