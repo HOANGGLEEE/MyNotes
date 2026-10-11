@@ -8,17 +8,18 @@ Open a new PowerShell terminal so the updated User PATH is loaded:
 
 ```powershell
 flutter pub get
+dart run build_runner build --delete-conflicting-outputs
 flutter run -d windows
 flutter analyze
 flutter test
 flutter build windows --release
 ```
 
-Local notes stay on this device and remain separate from account notes. Notes support create/edit, search, pin and soft hide. Hiding retains content; there is no permanent deletion command.
+The editor auto-saves after 500ms of inactivity and flushes on close. Toggle light/dark appearance with the toolbar button (selection is not yet persisted across restarts). Local notes stay on this device and remain separate from account notes. Notes support create/edit, search, pin and soft hide. Hiding retains content; there is no permanent deletion command.
 
 ## Supabase preparation
 
-1. Create/select your Supabase project. Review and apply `supabase/migrations/001_notes.sql` in its SQL editor. It creates a new table; do not run against an existing notes table without reviewing its schema.
+1. Create/select your Supabase project. For a NEW project apply `supabase/migrations/001_notes.sql`. If you already ran the previous 001 migration, apply ONLY `supabase/migrations/002_safe_sync.sql`. It creates a new table; do not run against an existing notes table without reviewing its schema.
 2. Enable Google under Authentication > Providers. Keep the Google client secret only in Supabase, never in this app or repository. Configure Google's authorized redirect URI to the Supabase Auth callback shown in the dashboard.
 3. Add `com.hoang.mynotes://login-callback/` to Supabase Auth redirect URLs.
 4. Copy `supabase.example.json` to `supabase.local.json`. Fill in the project URL and publishable/anon key only. Never use a service-role or secret key. The local config is ignored by git. Public client keys are extractable from an app; RLS is the security boundary.
@@ -27,7 +28,11 @@ Local notes stay on this device and remain separate from account notes. Notes su
 
 Signed-in notes are stored locally by account ID. Writes are queued durably in SQLite and retried on save, manual sync and every 30 seconds. Realtime triggers a refresh; full paginated pulls recover missed events. Soft-delete tombstones are retained. A revision guard avoids clearing a newer local edit when an older upload completes. Pending local edits are preserved during a pull.
 
-Conflict policy: the last write accepted by the server wins across devices. This does not merge concurrent text edits; a later sync can replace another device's version. Server timestamps avoid reliance on client clocks. Offline local notes are not automatically uploaded on login. Local SQLite is not encrypted and is accessible to the Windows user.
+Conflict policy: the server now checks the expected revision atomically. On a mismatch, the uploaded local draft is retained as an additional note titled '(bản xung đột)' and the original can then receive the remote version. Concurrent edits are NOT merged automatically; check both copies before deleting either. Older clients that still write the notes table directly should be upgraded before using this feature. Server timestamps avoid reliance on client clocks. Offline local notes are not automatically uploaded on login. Local SQLite is not encrypted and is accessible to the Windows user.
+
+## Important build note
+
+The checked-in Drift generated file may be stale after schema changes; ALWAYS run `dart run build_runner build --delete-conflicting-outputs` before analyze, test or build. CI regenerates it automatically. Android and Windows builds are not independently verified for this feature branch.
 
 ## Required live checks
 
