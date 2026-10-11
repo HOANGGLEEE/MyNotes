@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:uuid/uuid.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -39,10 +41,14 @@ Future<void> main() async {
   );
 }
 
+final themeMode = ValueNotifier<ThemeMode>(ThemeMode.system);
+
 class MyNotesApp extends StatelessWidget {
   const MyNotesApp({super.key});
   @override
-  Widget build(BuildContext context) => MaterialApp(
+  Widget build(BuildContext context) => ValueListenableBuilder<ThemeMode>(
+    valueListenable: themeMode,
+    builder: (context, mode, _) => MaterialApp(
     title: 'MyNotes',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
@@ -50,7 +56,11 @@ class MyNotesApp extends StatelessWidget {
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff526442)),
       scaffoldBackgroundColor: const Color(0xfff7f8f2),
     ),
+    darkTheme: ThemeData(useMaterial3: true, brightness: Brightness.dark,
+      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff526442), brightness: Brightness.dark)),
+    themeMode: mode,
     home: const NotesPage(),
+  ),
   );
 }
 
@@ -79,11 +89,40 @@ class _NotesPageState extends ConsumerState<NotesPage> {
 
   Future<void> edit(Note? note) async {
     final owner = ref.read(syncProvider).owner;
+    final noteId = note?.id ?? const Uuid().v4();
     final title = TextEditingController(text: note?.title ?? '');
     final body = TextEditingController(text: note?.body ?? '');
-    final result = await showDialog<bool>(
+    Timer? debounce;
+    Future<void> writes = Future<void>.value();
+    bool changed = false;
+    bool failed = false;
+
+    void flush() {
+      debounce?.cancel();
+      if (!changed) return;
+      changed = false;
+      final titleSnapshot = title.text;
+      final bodySnapshot = body.text;
+      if (note == null && titleSnapshot.trim().isEmpty &&
+          bodySnapshot.trim().isEmpty) return;
+      writes = writes.then((_) async {
+        await ref.read(databaseProvider).save(
+          owner, titleSnapshot, bodySnapshot, id: noteId,
+        );
+        if (mounted) unawaited(ref.read(syncProvider).sync());
+      }).catchError((Object _) { failed = true; });
+    }
+
+    void schedule(String _) {
+      changed = true;
+      debounce?.cancel();
+      debounce = Timer(const Duration(milliseconds: 500), flush);
+    }
+
+    await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
         title: Text(note == null ? 'Ghi chú mới' : 'Sửa ghi chú'),
         content: SizedBox(
           width: 540,
@@ -95,6 +134,7 @@ class _NotesPageState extends ConsumerState<NotesPage> {
                   controller: title,
                   autofocus: true,
                   maxLength: 200,
+                  onChanged: schedule,
                   decoration: const InputDecoration(labelText: 'Tiêu đề'),
                 ),
                 TextField(
@@ -102,6 +142,7 @@ class _NotesPageState extends ConsumerState<NotesPage> {
                   minLines: 6,
                   maxLines: 12,
                   maxLength: 100000,
+                  onChanged: schedule,
                   decoration: const InputDecoration(labelText: 'Nội dung'),
                 ),
               ],
@@ -110,28 +151,26 @@ class _NotesPageState extends ConsumerState<NotesPage> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Hủy'),
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Đóng'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Lưu'),
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Hoàn tất'),
           ),
         ],
       ),
     );
-    if (mounted &&
-        result == true &&
-        (title.text.trim().isNotEmpty || body.text.trim().isNotEmpty)) {
-      await perform(
-        () => ref
-            .read(databaseProvider)
-            .save(owner, title.text, body.text, previous: note),
-      );
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 300));
+    flush();
+    await writes;
+    debounce?.cancel();
     title.dispose();
     body.dispose();
+    if (failed && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Không thể tự lưu ghi chú. Hãy thử lại.')),
+      );
+    }
   }
 
   @override
@@ -146,6 +185,14 @@ class _NotesPageState extends ConsumerState<NotesPage> {
           appBar: AppBar(
             title: const Text('MyNotes'),
             actions: [
+              IconButton(
+                tooltip: 'Chuyển chế độ sáng/tối',
+                icon: const Icon(Icons.brightness_6_outlined),
+                onPressed: () {
+                  themeMode.value = themeMode.value == ThemeMode.dark
+                      ? ThemeMode.light : ThemeMode.dark;
+                },
+              ),
               IconButton(
                 tooltip: 'Đồng bộ',
                 onPressed: sync.owner == 'local' ? null : sync.sync,
