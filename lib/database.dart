@@ -114,7 +114,9 @@ class NoteDatabase extends _$NoteDatabase {
           .getSingleOrNull();
       // Do not resolve an older snapshot over newer local user input.
       if (current == null || !current.dirty ||
-          current.revision != uploaded.revision) return;
+          current.revision != uploaded.revision) {
+        return;
+      }
       final conflictTitle = current.title.length > 175
           ? current.title.substring(0, 175)
           : current.title;
