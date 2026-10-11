@@ -14,7 +14,7 @@ void main() {
       await db.save('alice', 'First', 'offline');
       final first = (await db.pending('alice')).single;
       await db.save('alice', 'Second', 'new edit', previous: first);
-      await db.acknowledge(first);
+      await db.acknowledge(first, 1);
       expect((await db.pending('alice')).single.title, 'Second');
       await db.merge('alice', {
         'id': first.id,
@@ -24,6 +24,7 @@ void main() {
         'pinned': false,
         'deleted': false,
         'updated_at': DateTime.now().toIso8601String(),
+        'revision': 1,
       });
       expect((await db.pending('alice')).single.title, 'Second');
       expect(await db.watchNotes('bob').first, isEmpty);
@@ -57,7 +58,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).at(1), 'Ý tưởng');
     await tester.enterText(find.byType(TextField).at(2), 'Nội dung của tôi');
-    await tester.tap(find.text('Lưu'));
+    await tester.tap(find.text('Hoàn tất'));
     await tester.pumpAndSettle();
     await tester.pump(const Duration(milliseconds: 350));
     expect(find.text('Ý tưởng'), findsOneWidget);
